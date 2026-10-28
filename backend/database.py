@@ -271,8 +271,11 @@ def get_registered_devices(db_path: str = DEFAULT_DB_PATH, offline_timeout_secon
             d["seconds_since_gps_fix"] = None
 
         # Calculate estimated accuracy from HDOP (~5m per HDOP unit)
-        hdop = d.get("hdop") or 1.0
-        d["estimated_accuracy_m"] = round(float(hdop) * 5.0, 1)
+        hdop = float(d.get("hdop") or 1.0)
+        if hdop < 50.0 and d.get("gps_fix"):
+            d["estimated_accuracy_m"] = round(hdop * 5.0, 1)
+        else:
+            d["estimated_accuracy_m"] = None
 
         results.append(d)
 

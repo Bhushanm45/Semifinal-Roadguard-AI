@@ -270,8 +270,29 @@ void parseNMEASentence(const String &nmea) {
     if (idx >= 9) {
       String rawSats = nmea.substring(commas[6] + 1, commas[7]);
       String rawHdop = nmea.substring(commas[7] + 1, commas[8]);
-      if (rawSats.length() > 0) currentGPS.satellites = (uint8_t)rawSats.toInt();
-      if (rawHdop.length() > 0) currentGPS.hdop = rawHdop.toFloat();
+      if (rawSats.length() > 0) {
+        uint8_t s = (uint8_t)rawSats.toInt();
+        if (s > 0) currentGPS.satellites = s;
+      }
+      if (rawHdop.length() > 0) {
+        float h = rawHdop.toFloat();
+        if (h > 0) currentGPS.hdop = h;
+      }
+    }
+  }
+
+  // 3. GSV: Satellites in View ($GPGSV, $GNGSV, $GLGSV)
+  else if (nmea.indexOf("GSV") >= 0) {
+    int c1 = nmea.indexOf(',');
+    int c2 = nmea.indexOf(',', c1 + 1);
+    int c3 = nmea.indexOf(',', c2 + 1);
+    int c4 = nmea.indexOf(',', c3 + 1);
+    if (c3 > 0 && c4 > c3) {
+      String rawSatsView = nmea.substring(c3 + 1, c4);
+      uint8_t sv = (uint8_t)rawSatsView.toInt();
+      if (sv > 0 && currentGPS.satellites == 0) {
+        currentGPS.satellites = sv; // Report visible satellites while acquiring!
+      }
     }
   }
 }
@@ -284,6 +305,17 @@ void processGPS() {
 
 #if HAS_TINYGPS_PLUS
     if (tinyGps.encode(c)) {
+      // Always extract satellites and HDOP even before location lock
+      if (tinyGps.satellites.isValid() && tinyGps.satellites.value() > 0) {
+        currentGPS.satellites = tinyGps.satellites.value();
+      }
+      if (tinyGps.hdop.isValid() && tinyGps.hdop.hdop() > 0) {
+        currentGPS.hdop = tinyGps.hdop.hdop();
+      }
+      if (tinyGps.speed.isValid()) {
+        currentGPS.speed_kmh = tinyGps.speed.kmph();
+      }
+
       if (tinyGps.location.isValid()) {
         float lat = tinyGps.location.lat();
         float lon = tinyGps.location.lng();
@@ -292,9 +324,6 @@ void processGPS() {
           currentGPS.longitude = lon;
           currentGPS.fix_valid = true;
           currentGPS.last_update_ms = millis();
-          if (tinyGps.satellites.isValid()) currentGPS.satellites = tinyGps.satellites.value();
-          if (tinyGps.hdop.isValid()) currentGPS.hdop = tinyGps.hdop.hdop();
-          if (tinyGps.speed.isValid()) currentGPS.speed_kmh = tinyGps.speed.kmph();
         }
       } else {
         currentGPS.fix_valid = false;

@@ -516,12 +516,16 @@ async function fetchDeviceStatus() {
                     } else {
                         // Searching for satellites / invalid fix
                         if (gpsText) {
-                            gpsText.innerHTML = `<span style="color:#F59E0B;"><i class="fa-solid fa-satellite-dish fa-spin"></i> Searching (${latest.satellites || 0} Sats in view)</span>`;
+                            const satCount = latest.satellites || 0;
+                            const satStr = satCount > 0 ? `${satCount} Sats in view` : `0 Sats in view`;
+                            gpsText.innerHTML = `<span style="color:#F59E0B;"><i class="fa-solid fa-satellite-dish fa-spin"></i> Searching (${satStr})</span>`;
                         }
                         if (mapBanner) {
                             mapBanner.classList.add("visible");
                             if (mapBannerText) {
-                                mapBannerText.innerHTML = `Waiting for physical ESP32 GPS fix... (NEO-6M searching: ${latest.satellites || 0} satellites visible, HDOP ${latest.hdop || 1.0})`;
+                                const satCount = latest.satellites || 0;
+                                const hdopStr = (latest.hdop && latest.hdop < 90) ? `, HDOP ${latest.hdop}` : ``;
+                                mapBannerText.innerHTML = `Waiting for physical ESP32 GPS fix... (NEO-6M searching: ${satCount} satellites visible${hdopStr})`;
                             }
                         }
                         // If a previous known fix exists, show as stale
@@ -628,8 +632,8 @@ function updateHardwareMapMarker(deviceData, isStale = false) {
             </div>
             <div style="display:grid; grid-template-columns:1fr 1fr; gap:4px; font-size:11px; margin-bottom:6px;">
                 <div><strong>Satellites:</strong> ${deviceData.satellites || 0}</div>
-                <div><strong>HDOP:</strong> ${deviceData.hdop || 1.0}</div>
-                <div><strong>Accuracy:</strong> ±${deviceData.estimated_accuracy_m || 5.0}m</div>
+                <div><strong>HDOP:</strong> ${(deviceData.hdop && deviceData.hdop < 90) ? deviceData.hdop : '--'}</div>
+                <div><strong>Accuracy:</strong> ${deviceData.estimated_accuracy_m ? '±' + deviceData.estimated_accuracy_m + 'm' : (deviceData.satellites > 0 ? 'Acquiring (' + deviceData.satellites + ' Sats)' : 'Searching')}</div>
                 <div><strong>Speed:</strong> ${deviceData.speed_kmh || 0.0} km/h</div>
             </div>
             <div style="font-size:10px; color:#64748B; border-top:1px solid #CBD5E1; padding-top:4px;">
