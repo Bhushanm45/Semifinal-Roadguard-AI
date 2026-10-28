@@ -20,7 +20,6 @@ Methodological Principles:
    - Real HARDWARE detections and SIMULATION demo runs are strictly segregated.
 """
 
-import os
 import math
 from datetime import datetime
 from typing import Dict, Any, Optional, Tuple, List
@@ -31,7 +30,7 @@ from backend.database import (
     DEFAULT_DB_PATH
 )
 
-CLUSTER_RADIUS_METERS = float(os.environ.get("CLUSTER_RADIUS_METERS", 8.0))  # GPS cluster threshold (8.0m for prototype demo)
+CLUSTER_RADIUS_METERS = 25.0  # GPS cluster threshold
 
 
 def haversine_distance_meters(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -191,25 +190,15 @@ def process_and_aggregate_detection(
         old_count = matched_hotspot["observation_count"]
         new_count = old_count + 1
 
-        # Check if this detection represents a distinct vehicle pass
+        # Check if this ride has already been recorded for this hotspot
         cursor.execute("""
             SELECT COUNT(*) FROM raw_detections
             WHERE hotspot_id = ? AND ride_id = ?
         """, (hotspot_id, ride_id))
         prior_reports_same_ride = cursor.fetchone()[0]
 
-        # Timestamp of last hit on this hotspot
-        cursor.execute("""
-            SELECT MAX(timestamp_ms) FROM raw_detections
-            WHERE hotspot_id = ?
-        """, (hotspot_id,))
-        last_hit = cursor.fetchone()
-        last_hit_ts = (last_hit[0] if last_hit and last_hit[0] else 0)
-
-        current_det_ts = detection.get("timestamp_ms", int(datetime.now().timestamp() * 1000))
-        # If separated by >= 1200ms OR different ride, count as an independent vehicle pass!
-        is_new_pass = (prior_reports_same_ride == 0) or ((current_det_ts - last_hit_ts) >= 1200)
-        new_distinct_rides = matched_hotspot["distinct_rides"] + (1 if is_new_pass else 0)
+        is_new_ride = (prior_reports_same_ride == 0)
+        new_distinct_rides = matched_hotspot["distinct_rides"] + (1 if is_new_ride else 0)
 
         # Update centroid position (weighted average)
         new_lat = ((matched_hotspot["latitude"] * old_count) + lat) / new_count
@@ -254,7 +243,7 @@ def process_and_aggregate_detection(
 
     else:
         # Create brand new hotspot
-        location_name = gps.get("location_name") or determine_pune_location_name(lat, lon)
+        location_name = determine_pune_location_name(lat, lon)
         score, level = calculate_priority_score(
             distinct_rides=1,
             avg_confidence=confidence,

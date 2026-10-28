@@ -380,17 +380,6 @@ function handleBrowserLocateMe() {
                 marker.openPopup();
             }
 
-            // Sync user location to backend so indoor prototype tests appear right here on the map!
-            fetch("/api/set-demo-location", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    latitude: userLat,
-                    longitude: userLon,
-                    location_name: "Local Testing Site"
-                })
-            }).catch(() => {});
-
             if (btn) {
                 btn.disabled = false;
                 btn.innerHTML = '<i class="fa-solid fa-laptop"></i> Located';
@@ -781,7 +770,6 @@ async function refreshDashboard() {
         const hotspotsRes = await fetch(`/api/hotspots?mode=${currentMode}`);
         if (hotspotsRes.ok) {
             const data = await hotspotsRes.json();
-            const prevCount = activeHotspots.length;
             activeHotspots = data.hotspots || [];
 
             const elMapCount = document.getElementById("dashMapCount");
@@ -789,20 +777,12 @@ async function refreshDashboard() {
 
             renderMarkers();
             renderHotspotsTable();
-
-            // Auto-focus map if a new hazard hotspot has just been detected
-            if (activeHotspots.length > prevCount && prevCount > 0 && map) {
-                const newest = activeHotspots[0];
-                if (newest && newest.latitude && newest.longitude) {
-                    map.flyTo([newest.latitude, newest.longitude], 15, { duration: 1.0 });
-                }
-            }
         }
 
         // 3. Fetch recent raw detections (includes unlocated hazards with no GPS fix)
         //    These appear in the Live Alerts Stream even before a GPS hotspot is formed.
         try {
-            const rawRes = await fetch(`/api/detections?mode=${currentMode}&limit=25`);
+            const rawRes = await fetch(`/api/detections?mode=${currentMode}&limit=10`);
             if (rawRes.ok) {
                 const rawData = await rawRes.json();
                 rawDetections = rawData.detections || [];
@@ -813,7 +793,7 @@ async function refreshDashboard() {
 
         // Refresh specific pages if currently viewed
         if (activeSection === "workflow") renderWorkflowBoard();
-        if (activeSection === "alerts") renderAlertsPage();
+        if (activeSection === "alerts" && alertsViewMode === "HOTSPOTS") renderAlertsPage();
     } catch (err) {
         console.warn("Polling update error:", err);
     }
@@ -922,32 +902,6 @@ function renderMarkers() {
         marker.bindPopup(popupContent);
         markersLayer.addLayer(marker);
     });
-
-    // Render numbered pass pins for recent live passes
-    if (rawDetections && rawDetections.length > 0) {
-        rawDetections.slice(0, 15).forEach((d, idx) => {
-            if ((currentMode !== "ALL" && d.mode !== currentMode) || !d.latitude || !d.longitude) return;
-            const passNum = rawDetections.length - idx;
-            const passColor = d.hazard_type === "POTHOLE" ? "#EF4444" : (d.hazard_type === "SPEED_BREAKER" ? "#F59E0B" : "#38BDF8");
-            const passIcon = L.divIcon({
-                className: "pass-marker",
-                html: `<div style="background:${passColor}; color:white; border-radius:50%; width:20px; height:20px; display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:800; border:2px solid #fff; box-shadow:0 1px 5px rgba(0,0,0,0.4);">${passNum}</div>`,
-                iconSize: [20, 20],
-                iconAnchor: [10, 10]
-            });
-            const passMarker = L.marker([d.latitude, d.longitude], { icon: passIcon });
-            passMarker.bindPopup(`
-                <div style="font-family:Inter,sans-serif; font-size:12px; min-width:180px;">
-                    <div style="font-weight:700; color:${passColor}; margin-bottom:4px;">Pass #${passNum}: ${d.hazard_type}</div>
-                    <div><strong>Severity:</strong> ${d.severity_metric ? d.severity_metric.toFixed(2) + 'g' : '--'}</div>
-                    <div><strong>Confidence:</strong> ${(d.confidence * 100).toFixed(0)}%</div>
-                    <div><strong>Time:</strong> ${d.created_at ? new Date(d.created_at).toLocaleTimeString() : '--'}</div>
-                    <div style="font-size:10px; color:#64748B; margin-top:4px;">📍 ${d.latitude.toFixed(5)}, ${d.longitude.toFixed(5)}</div>
-                </div>
-            `);
-            markersLayer.addLayer(passMarker);
-        });
-    }
 }
 
 /**
@@ -989,39 +943,7 @@ function renderAlertsStream() {
     const container = document.getElementById("alertsStream");
     if (!container) return;
 
-    // Show individual live hazard detections / passes in real-time
-    const recentHazards = rawDetections.filter(d => currentMode === "ALL" || d.mode === currentMode);
-    if (recentHazards.length > 0) {
-        container.innerHTML = recentHazards.slice(0, 8).map((d, idx) => {
-            const passNum = recentHazards.length - idx;
-            const hazardColor = d.hazard_type === "POTHOLE" ? "#EF4444"
-                              : d.hazard_type === "SPEED_BREAKER" ? "#F59E0B"
-                              : "#38BDF8";
-            const ts = d.created_at
-                ? new Date(d.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
-                : "--";
-            const location = (d.gps_valid && d.latitude && d.longitude)
-                ? `📍 ${parseFloat(d.latitude).toFixed(5)}, ${parseFloat(d.longitude).toFixed(5)}`
-                : "📡 Scale Test Track";
-            const confPct = d.confidence ? Math.round(d.confidence * 100) + "% conf" : "";
-            const severity = d.severity_metric ? ` • ${parseFloat(d.severity_metric).toFixed(2)}g` : "";
-            return `
-                <div class="alert-item ${d.hazard_type.toLowerCase()}">
-                    <div>
-                        <div class="alert-title" style="color:${hazardColor}; font-weight:700;">
-                            Pass #${passNum}: ${d.hazard_type}
-                            <span style="font-size:9px; color:#34D399; margin-left:4px;">[${d.mode || "HARDWARE"} · LIVE]</span>
-                        </div>
-                        <div class="alert-subtitle">${location} · ${ts} ${confPct}${severity}</div>
-                    </div>
-                    <span class="alert-badge badge-high" style="background:#1E293B; color:#94A3B8; border:1px solid #334155;">PASS #${passNum}</span>
-                </div>
-            `;
-        }).join("");
-        return;
-    }
-
-    // Fall back to active hotspots if no raw detections logged yet
+    // Prefer confirmed GPS hotspots; fall back to recent raw detections (no GPS fix yet)
     if (activeHotspots.length > 0) {
         container.innerHTML = activeHotspots.slice(0, 6).map(h => `
             <div class="alert-item ${h.hazard_type.toLowerCase()}">
@@ -1030,7 +952,7 @@ function renderAlertsStream() {
                         ${h.hazard_type}: ${h.location_name || "Road Obstacle"}
                         <span style="font-size:9px; color:${h.mode==='HARDWARE'?'#34D399':'#FBBF24'}; margin-left:4px;">[${h.mode}]</span>
                     </div>
-                    <div class="alert-subtitle">${h.distinct_rides} passes • ${h.observation_count} detections</div>
+                    <div class="alert-subtitle">${h.distinct_rides} independent buses • ${h.observation_count} detections</div>
                 </div>
                 <span class="alert-badge badge-${h.priority_level.toLowerCase()}">${h.priority_level}</span>
             </div>
@@ -1038,7 +960,38 @@ function renderAlertsStream() {
         return;
     }
 
-    container.innerHTML = `<div class="empty-state">Waiting for incoming telemetry packets / vehicle passes...</div>`;
+    // No hotspots yet — show raw hardware detections (GPS unavailable phase)
+    const recentHazards = rawDetections.filter(d => d.mode === currentMode);
+    if (recentHazards.length === 0) {
+        container.innerHTML = `<div class="empty-state">No hazard alerts currently flagged for ${currentMode.toLowerCase()} mode.</div>`;
+        return;
+    }
+
+    container.innerHTML = recentHazards.slice(0, 6).map(d => {
+        const hazardColor = d.hazard_type === "POTHOLE" ? "#EF4444"
+                          : d.hazard_type === "SPEED_BREAKER" ? "#F59E0B"
+                          : "#38BDF8";
+        const ts = d.created_at
+            ? new Date(d.created_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })
+            : "--";
+        const location = (d.gps_valid && d.latitude && d.longitude)
+            ? `📍 ${parseFloat(d.latitude).toFixed(5)}, ${parseFloat(d.longitude).toFixed(5)}`
+            : "📡 No GPS Fix";
+        const confPct = d.confidence ? Math.round(d.confidence * 100) + "% conf" : "";
+        const severity = d.severity_metric ? ` • ${parseFloat(d.severity_metric).toFixed(2)}g` : "";
+        return `
+            <div class="alert-item ${d.hazard_type.toLowerCase()}">
+                <div>
+                    <div class="alert-title" style="color:${hazardColor};">
+                        ${d.hazard_type}
+                        <span style="font-size:9px; color:#34D399; margin-left:4px;">[HARDWARE · LIVE]</span>
+                    </div>
+                    <div class="alert-subtitle">${location} · ${ts} ${confPct}${severity}</div>
+                </div>
+                <span class="alert-badge badge-high" style="background:#1E293B; color:#94A3B8; border:1px solid #334155;">RAW</span>
+            </div>
+        `;
+    }).join("");
 }
 
 /**
@@ -1116,18 +1069,9 @@ async function renderAlertsPage() {
                     return;
                 }
 
-                tbody.innerHTML = detections.map(d => {
-                    const isNormal = (d.hazard_type === "NORMAL_ROAD");
-                    const hazardColor = isNormal ? "#10B981" 
-                                      : (d.hazard_type === "POTHOLE" ? "#EF4444" 
-                                      : (d.hazard_type === "SPEED_BREAKER" ? "#F59E0B" : "#38BDF8"));
-                    const statusTag = isNormal 
-                        ? `<span class="status-tag" style="background:rgba(16,185,129,0.15); color:#10B981; border:1px solid rgba(16,185,129,0.3); font-weight:700;">LIVE STREAM</span>`
-                        : `<span class="status-tag status-detected">${d.gps_valid ? "GEOTAGGED" : "UNLOCATED"}</span>`;
-
-                    return `
+                tbody.innerHTML = detections.map(d => `
                     <tr>
-                        <td><strong style="color:${hazardColor};">${d.hazard_type}</strong></td>
+                        <td><strong>${d.hazard_type}</strong></td>
                         <td>
                             <span>Device: <code>${d.device_id || "ESP32"}</code> • Ride: <code>${d.ride_id || "--"}</code></span><br>
                             <span style="font-size:11px; color:#64748B;">
@@ -1135,10 +1079,10 @@ async function renderAlertsPage() {
                             </span>
                         </td>
                         <td><span style="font-size:10px; font-weight:700; color:${d.mode==='HARDWARE'?'#34D399':'#FBBF24'};">[${d.mode}]</span></td>
-                        <td><strong style="color:#F8FAFC;">Seq #${d.seq_num || 0}</strong></td>
+                        <td>Seq #${d.seq_num || 0}</td>
                         <td>${(d.confidence * 100).toFixed(0)}% • ${d.severity_metric ? d.severity_metric.toFixed(2) + 'g' : '--'}</td>
                         <td>--</td>
-                        <td>${statusTag}</td>
+                        <td><span class="status-tag status-detected">${d.gps_valid ? "GEOTAGGED" : "UNLOCATED"}</span></td>
                         <td>
                             ${d.latitude && d.longitude ? `
                                 <button class="alert-action-btn" onclick="focusHotspotOnMap(${d.latitude}, ${d.longitude})">
@@ -1147,8 +1091,7 @@ async function renderAlertsPage() {
                             ` : `<span style="font-size:11px; color:#64748B;">No GPS</span>`}
                         </td>
                     </tr>
-                    `;
-                }).join("");
+                `).join("");
             }
         } catch (err) {
             tbody.innerHTML = `<tr><td colspan="8" class="text-center" style="color:#EF4444;">Failed to fetch raw detections.</td></tr>`;

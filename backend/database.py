@@ -434,27 +434,6 @@ def get_recent_raw_detections(
     return [dict(r) for r in rows]
 
 
-
-
-def prune_old_normal_detections(max_rows: int = 150, db_path: str = DEFAULT_DB_PATH):
-    """Keeps the latest max_rows of NORMAL_ROAD detections to keep SQLite light while maintaining continuous live streaming."""
-    try:
-        conn = get_db_connection(db_path)
-        cursor = conn.cursor()
-        cursor.execute("""
-            DELETE FROM raw_detections 
-            WHERE hazard_type = 'NORMAL_ROAD' 
-              AND id NOT IN (
-                  SELECT id FROM raw_detections 
-                  WHERE hazard_type = 'NORMAL_ROAD' 
-                  ORDER BY id DESC LIMIT ?
-              )
-        """, (max_rows,))
-        conn.commit()
-        conn.close()
-    except Exception:
-        pass
-
 def get_analytics_summary(mode_filter: str = "ALL", db_path: str = DEFAULT_DB_PATH) -> Dict[str, Any]:
     """Computes comprehensive aggregated analytics for charts and reporting."""
     conn = get_db_connection(db_path)

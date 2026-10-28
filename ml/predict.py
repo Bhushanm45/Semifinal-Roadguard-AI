@@ -133,7 +133,6 @@ class RoadGuardPredictor:
         # If the model's prediction is uncertain or missed a physical hazard,
         # evaluate the physics of the accelerometer and gyroscope signals.
         if self.confidence_threshold <= 1.0:
-            az_mean = feature_dict.get("az_mean", 1.0)
             az_p2p = feature_dict.get("az_peak_to_peak", 0.0)
             az_kurt = feature_dict.get("az_kurtosis", 3.0)
             az_std = feature_dict.get("az_std", 0.0)
@@ -142,39 +141,26 @@ class RoadGuardPredictor:
             amag_std = feature_dict.get("amag_std", 0.0)
             drop_before_rise = feature_dict.get("temporal_drop_before_rise", 0.0)
 
-            upward_shock = max(0.0, az_max - az_mean)
-            downward_shock = max(0.0, az_mean - az_min)
-
-            # 4.1 NORMAL ROAD: Quiet baseline, minimal variance (desk / smooth floor)
-            if az_p2p < 0.28 and az_std < 0.055 and upward_shock < 0.16 and downward_shock < 0.16:
-                effective_class = "NORMAL_ROAD"
-                max_conf = 0.95
-                is_uncertain = False
-
-            # 4.2 POTHOLE: Sharp downward drop into cavity BEFORE upward rebound shock
-            # Requires distinct downward drop (downward_shock >= 0.25) AND (drop occurs first OR deep hole)
-            elif downward_shock >= 0.25 and az_p2p >= 0.45 and (drop_before_rise == 1.0 or downward_shock >= 0.35):
-                effective_class = "POTHOLE"
-                max_conf = min(0.98, max(0.75, 0.70 + az_p2p * 0.20))
-                is_uncertain = False
-
-            # 4.3 SPEED BREAKER: Upward elevation hump dominant without deep cavity drop
-            # Upward shock > downward drop, upward shock >= 0.15, no deep hole (downward_shock < 0.25)
-            elif upward_shock >= 0.15 and az_p2p >= 0.28 and (upward_shock >= downward_shock * 1.1 or downward_shock < 0.22):
-                effective_class = "SPEED_BREAKER"
-                max_conf = min(0.95, max(0.72, 0.70 + upward_shock * 0.35))
-                is_uncertain = False
-
-            # 4.4 ROUGH ROAD: Continuous stochastic vibration chatter across window
-            elif (az_std >= 0.065 or amag_std >= 0.075) and az_kurt < 4.5:
-                effective_class = "ROUGH_ROAD"
-                max_conf = min(0.92, max(0.68, 0.68 + (az_std - 0.065) * 0.8))
-                is_uncertain = False
-
-            # 4.5 Fall back to ML model prediction if high confidence
-            elif raw_pred in HAZARD_CLASSES and max_conf >= 0.60:
+            # If raw ML prediction is already a recognized hazard with solid confidence (>= 0.50), accept it
+            if raw_pred in HAZARD_CLASSES and max_conf >= 0.50:
                 effective_class = raw_pred
                 is_uncertain = False
+            elif is_uncertain or raw_pred == "NORMAL_ROAD":
+                # Check for Pothole (sharp impulsive shock: high kurtosis and high peak-to-peak)
+                if az_p2p >= 1.4 and (az_kurt >= 4.0 or az_max >= 2.0 or az_min <= 0.35):
+                    effective_class = "POTHOLE"
+                    max_conf = min(0.96, max(0.72, 0.70 + (az_p2p - 1.4) * 0.12))
+                    is_uncertain = False
+                # Check for Speed Breaker (smooth vertical elevation hump: low kurtosis, elevated max, no sharp cavity)
+                elif az_p2p >= 0.55 and az_kurt < 3.5 and az_max >= 1.35 and az_min >= 0.65:
+                    effective_class = "SPEED_BREAKER"
+                    max_conf = min(0.92, max(0.70, 0.70 + (az_max - 1.35) * 0.25))
+                    is_uncertain = False
+                # Check for Rough Road (continuous stochastic chatter: elevated std, near-normal kurtosis)
+                elif (az_std >= 0.18 or amag_std >= 0.20) and az_kurt < 4.0:
+                    effective_class = "ROUGH_ROAD"
+                    max_conf = min(0.92, max(0.68, 0.68 + (az_std - 0.18) * 0.5))
+                    is_uncertain = False
 
         # 5. Hazard Eligibility
         is_hazard = (effective_class in HAZARD_CLASSES) and (not is_uncertain)
@@ -191,7 +177,7 @@ class RoadGuardPredictor:
         if gps_fix:
             gps_info["latitude"] = gps_fix.get("latitude")
             gps_info["longitude"] = gps_fix.get("longitude")
-            gps_info["valid"] = bool(gps_fix.get("valid", False) or gps_fix.get("fix_valid", False))
+            gps_info["valid"] = bool(gps_fix.get("fix_valid", False))
 
         return {
             "class": effective_class,

@@ -31,9 +31,9 @@ TinyGPSPlus tinyGps;
 #if __has_include("secrets.h")
 #include "secrets.h"
 #else
-const char* WIFI_SSID     = "Yatiraj_1st_floor";   // Active Wi-Fi SSID
-const char* WIFI_PASSWORD = "Yatiraj_boiz69";                // Active Wi-Fi password
-const char* BACKEND_URL   = "http://192.168.1.8:5000/api/telemetry"; // Active Laptop IP & Endpoint
+const char* WIFI_SSID     = "YOUR_HOTSPOT_SSID";     // Configure in secrets.h
+const char* WIFI_PASSWORD = "YOUR_HOTSPOT_PASSWORD"; // Configure in secrets.h
+const char* BACKEND_URL   = "http://192.168.1.100:5000/api/telemetry"; // Configure in secrets.h
 #endif
 
 // ============================================================================
@@ -68,8 +68,8 @@ const char* BACKEND_URL   = "http://192.168.1.8:5000/api/telemetry"; // Active L
 #define GYRO_SCALE_500     65.5f
 
 // Impact Shock Detection Thresholds
-#define SHOCK_Z_THRESHOLD_G 0.35f   // |az - 1.0g| >= 0.35g shock (tuned for prototype testing)
-#define SHOCK_TOTAL_G       1.40f   // Vector magnitude >= 1.40g
+#define SHOCK_Z_THRESHOLD_G 1.20f   // |az - 1.0g| >= 1.2g shock
+#define SHOCK_TOTAL_G       2.20f   // Vector magnitude >= 2.2g
 
 // ============================================================================
 // 3. TELEMETRY DATA STRUCTURES
@@ -95,9 +95,7 @@ struct GPSFix {
 };
 
 // Buffers & State Variables
-// Safety: Expanded buffer capacity to prevent overflow during network pauses
-#define BATCH_BUFFER_CAPACITY 40
-SensorSample batchBuffer[BATCH_BUFFER_CAPACITY];
+SensorSample batchBuffer[SAMPLES_PER_BATCH];
 int batchCount = 0;
 GPSFix currentGPS = { 0.0f, 0.0f, 0.0f, false, 0, 99.0f, 0 };
 uint32_t sequenceNumber = 0;
@@ -365,9 +363,7 @@ void sendBatchHTTP() {
   }
 
   http.addHeader("Content-Type", "application/json");
-  http.addHeader("Connection", "close"); // Prevent socket leaks in lwIP
-  http.setReuse(false);                  // Close TCP socket immediately after every request
-  http.setTimeout(850);                  // 850ms timeout
+  http.setTimeout(750); // 750ms timeout preserves MPU6050 sampling rate
 
   sequenceNumber++;
 
@@ -442,15 +438,6 @@ void sendBatchHTTP() {
   impactInCurrentBatch = false;
   maxBatchShockG = 0.0f;
   batchCount = 0;
-
-  // Resync sample timer so we don't burst after HTTP blocking
-  lastSampleTimeUs = micros();
-
-  // Diagnostic log every 50 sequences to verify heap health
-  if (sequenceNumber % 50 == 0) {
-    Serial.printf("[SYSTEM HEALTH] Seq #%lu | Free Heap: %d bytes | WiFi RSSI: %d dBm\n",
-                  sequenceNumber, ESP.getFreeHeap(), WiFi.RSSI());
-  }
 }
 
 // ============================================================================
@@ -503,17 +490,11 @@ void loop() {
 
   // 2. Non-Blocking ~100 Hz MPU6050 Sampling Loop
   if (currentUs - lastSampleTimeUs >= SAMPLE_INTERVAL_US) {
-    if (currentUs - lastSampleTimeUs > 50000) {
-      lastSampleTimeUs = currentUs;
-    } else {
-      lastSampleTimeUs += SAMPLE_INTERVAL_US;
-    }
+    lastSampleTimeUs += SAMPLE_INTERVAL_US;
 
     SensorSample sample;
     if (readMPU6050(sample)) {
-      if (batchCount < BATCH_BUFFER_CAPACITY) {
-        batchBuffer[batchCount++] = sample;
-      }
+      batchBuffer[batchCount++] = sample;
 
       // Real-Time Road Impact Detection
       float zShock = abs(sample.az - 1.0f);

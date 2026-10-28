@@ -30,7 +30,6 @@ def get_laptop_lan_ip() -> str:
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from backend.database import (
-    prune_old_normal_detections,
     init_db,
     insert_raw_detection,
     get_all_hotspots,
@@ -59,16 +58,6 @@ CORS(app)
 DEVICE_BUFFERS = collections.defaultdict(lambda: collections.deque(maxlen=200))
 LATEST_GPS = {}
 DEVICE_LAST_SEQ = {}
-DEVICE_LAST_HAZARD_TS = {}
-DEVICE_LAST_NORMAL_TS = {}
-
-# Active reference testing location for indoor / prototype testing
-ACTIVE_DEMO_COORDS = {
-    "latitude": 18.520432,   # Pune Municipal Center / PICT
-    "longitude": 73.856740,
-    "location_name": "Demo Prototype Test Track",
-    "last_synced_at": datetime.now().isoformat()
-}
 
 # Initialize Database on app startup
 init_db()
@@ -162,27 +151,6 @@ def network_info():
         "backend_url": f"http://{lan_ip}:{port}/api/telemetry",
         "instructions": f"Set BACKEND_URL = \"http://{lan_ip}:{port}/api/telemetry\" in firmware/esp32_roadguard/secrets.h"
     })
-
-
-@app.route("/api/set-demo-location", methods=["POST"])
-def set_demo_location():
-    """Allows browser or dashboard to set reference coordinates for indoor prototype runs."""
-    global ACTIVE_DEMO_COORDS
-    body = request.get_json(silent=True) or {}
-    lat = body.get("latitude")
-    lon = body.get("longitude")
-    loc_name = body.get("location_name", "Local Prototype Test Site")
-    if lat is not None and lon is not None:
-        try:
-            ACTIVE_DEMO_COORDS["latitude"] = float(lat)
-            ACTIVE_DEMO_COORDS["longitude"] = float(lon)
-            ACTIVE_DEMO_COORDS["location_name"] = str(loc_name)
-            ACTIVE_DEMO_COORDS["last_synced_at"] = datetime.now().isoformat()
-            logger.info(f"[Demo Location] Updated reference coordinates to ({lat}, {lon}) - {loc_name}")
-            return jsonify({"status": "ok", "coordinates": ACTIVE_DEMO_COORDS})
-        except Exception as e:
-            return jsonify({"error": str(e)}), 400
-    return jsonify({"error": "Missing latitude or longitude"}), 400
 
 
 @app.route("/api/hardware-position", methods=["GET"])
@@ -288,41 +256,20 @@ def ingest_telemetry():
         "latitude": float(lat) if (gps_is_valid and lat is not None) else None,
         "longitude": float(lon) if (gps_is_valid and lon is not None) else None,
         "valid": gps_is_valid,
-        "fix_valid": gps_is_valid,
         "satellites": satellites,
         "hdop": hdop,
         "is_stale": is_stale
     }
-
-    # Indoor / Prototype Demo Fallback:
-    # If physical satellite GPS fix is absent (e.g. testing indoors on desk / floor),
-    # generate a realistic nearby coordinate around the active test track
-    # so hazards appear LIVE on the map rather than being quarantined as unlocated!
-    if not gps_is_valid or normalized_gps["latitude"] is None:
-        base_lat = ACTIVE_DEMO_COORDS["latitude"]
-        base_lon = ACTIVE_DEMO_COORDS["longitude"]
-
-        # Add small natural offset (+-5 to 10m) so multiple obstacles don't overlap into one dot
-        jitter_lat = base_lat + float(np.random.uniform(-0.00008, 0.00008))
-        jitter_lon = base_lon + float(np.random.uniform(-0.00008, 0.00008))
-
-        normalized_gps["latitude"] = round(jitter_lat, 6)
-        normalized_gps["longitude"] = round(jitter_lon, 6)
-        normalized_gps["valid"] = True
-        normalized_gps["fix_valid"] = True
-        normalized_gps["is_demo_fallback"] = True
-        normalized_gps["location_name"] = ACTIVE_DEMO_COORDS.get("location_name", "Scale Prototype Track")
-
     LATEST_GPS[device_id] = normalized_gps
 
-    # Update device heartbeat registry with guaranteed location
+    # Update device heartbeat registry
     client_ip = request.headers.get("X-Forwarded-For", request.remote_addr)
     update_device_heartbeat(
         device_id=device_id,
         ip_address=client_ip,
-        gps_fix=bool(normalized_gps.get("valid", True)),
-        satellites=satellites if satellites > 0 else 8,
-        hdop=hdop if hdop > 0 else 1.0,
+        gps_fix=gps_is_valid,
+        satellites=satellites,
+        hdop=hdop,
         seq_num=seq_num,
         firmware_version=firmware_version,
         latitude=normalized_gps["latitude"],
@@ -363,32 +310,15 @@ def ingest_telemetry():
         pred["seq_num"] = seq_num
         latest_prediction = pred
 
-        now_ts = current_time_ms
-        last_hazard_time = DEVICE_LAST_HAZARD_TS.get(device_id, 0)
-        last_normal_time = DEVICE_LAST_NORMAL_TS.get(device_id, 0)
-
-        # 1. If eligible hazard detected (POTHOLE, SPEED_BREAKER, ROUGH_ROAD)
+        # If eligible hazard detected (POTHOLE, SPEED_BREAKER, ROUGH_ROAD)
         if pred.get("is_hazard"):
             alert_triggered = (pred.get("class") == "POTHOLE")
-
-            # Debounce: Prevent the same 1-second shock from logging 5 times across sliding batches
-            if (now_ts - last_hazard_time) >= 750:
-                DEVICE_LAST_HAZARD_TS[device_id] = now_ts
-                detection_id = insert_raw_detection(pred)
-                hotspot_id = process_and_aggregate_detection(pred, detection_id)
-                pred["hotspot_id"] = hotspot_id
-                pred["location_status"] = "LOCATED" if hotspot_id else "UNLOCATED_NO_GPS"
-            else:
-                pred["debounced"] = True
-        else:
-            # 2. Continuous Live Sensor Stream:
-            # Whenever the sensor is ON and road is normal, log a live heartbeat every 1.5s
-            # so the Raw Sensor Stream table streams live data continuously!
-            if (now_ts - last_normal_time) >= 1500:
-                DEVICE_LAST_NORMAL_TS[device_id] = now_ts
-                pred["location_status"] = "LIVE_STREAM"
-                insert_raw_detection(pred)
-                prune_old_normal_detections(max_rows=150)
+            # 1. Insert into raw_detections table
+            detection_id = insert_raw_detection(pred)
+            # 2. Process spatial aggregation into hotspots (only if GPS is valid)
+            hotspot_id = process_and_aggregate_detection(pred, detection_id)
+            pred["hotspot_id"] = hotspot_id
+            pred["location_status"] = "LOCATED" if hotspot_id else "UNLOCATED_NO_GPS"
 
     return jsonify({
         "status": "ok",
